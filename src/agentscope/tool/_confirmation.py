@@ -35,11 +35,11 @@ class ToolConfirmationBase:
 class TerminalToolConfirmation(ToolConfirmationBase):
     """Terminal-based tool confirmation."""
 
-    def __init__(self, confirmation_prompt: str = "确认执行工具") -> None:
+    def __init__(self, confirmation_prompt: str = "Confirm tool execution") -> None:
         """Initialize the terminal confirmation handler.
 
         Args:
-            confirmation_prompt (`str`, defaults to `"确认执行工具"`):
+            confirmation_prompt (`str`, defaults to `"Confirm tool execution"`):
                 The prompt text to display when requesting confirmation.
         """
         self.confirmation_prompt = confirmation_prompt
@@ -65,16 +65,16 @@ class TerminalToolConfirmation(ToolConfirmationBase):
                 `True` if the user confirms the execution, `False` otherwise.
         """
         print(f"\n{self.confirmation_prompt}: {tool_name}")
-        print(f"参数: {tool_args}")
+        print(f"Arguments: {tool_args}")
         
         while True:
-            response = input("是否执行? (y/n): ").strip().lower()
-            if response in ['y', 'yes', '是', '确认']:
+            response = input("Execute? (y/n): ").strip().lower()
+            if response in ['y', 'yes']:
                 return True
-            elif response in ['n', 'no', '否', '取消']:
+            elif response in ['n', 'no']:
                 return False
             else:
-                print("请输入 y/yes/是/确认 或 n/no/否/取消")
+                print("Please enter y/yes or n/no")
 
 
 class StudioToolConfirmation(ToolConfirmationBase):
@@ -178,3 +178,38 @@ async def request_tool_confirmation(
     """
     handler = get_confirmation_handler()
     return await handler.request_confirmation(tool_name, tool_args, **kwargs)
+
+
+class UserAgentToolConfirmation(ToolConfirmationBase):
+    """Use a UserAgent to request confirmation, unifying terminal/studio input.
+
+    This handler leverages the current `UserAgent` input method (terminal or studio)
+    so that the same logic works in both environments.
+    """
+
+    def __init__(self, confirmation_prompt: str = "Confirm tool execution") -> None:
+        self.confirmation_prompt = confirmation_prompt
+
+    async def request_confirmation(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        **kwargs: Any,
+    ) -> bool:
+        # Import here to avoid circular import
+        from ..agent import UserAgent
+        from ..message import Msg
+
+        # Compose confirmation question
+        question = (
+            f"{self.confirmation_prompt}: {tool_name}\n"
+            f"Arguments: {tool_args}\n"
+            f"Execute? (y/n)"
+        )
+
+        # Use UserAgent so it can route to terminal or studio
+        user = UserAgent(name="user")
+        system_msg = Msg("system", question, "system")
+        reply = await user(system_msg)
+        text = (reply.get_text_content() or "").strip().lower()
+        return text in ["y", "yes"]

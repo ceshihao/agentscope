@@ -48,7 +48,7 @@ from ..types import (
 )
 from ..tracing._trace import trace_toolkit
 from .._logging import logger
-from ._confirmation import request_tool_confirmation
+from ._confirmation import request_tool_confirmation, ToolConfirmationBase, TerminalToolConfirmation
 
 
 @dataclass
@@ -100,6 +100,7 @@ class Toolkit(StateModule):
 
         self.tools: dict[str, RegisteredToolFunction] = {}
         self.groups: dict[str, ToolGroup] = {}
+        self.confirmation_handler: ToolConfirmationBase | None = None
 
     def create_tool_group(
         self,
@@ -135,6 +136,27 @@ class Toolkit(StateModule):
             notes=notes,
             active=active,
         )
+
+    def set_confirmation_handler(self, handler: ToolConfirmationBase) -> None:
+        """Set the tool confirmation handler for this toolkit.
+
+        Args:
+            handler (`ToolConfirmationBase`):
+                The confirmation handler to use for this toolkit.
+        """
+        self.confirmation_handler = handler
+
+    def get_confirmation_handler(self) -> ToolConfirmationBase:
+        """Get the tool confirmation handler for this toolkit.
+
+        Returns:
+            `ToolConfirmationBase`:
+                The current confirmation handler. If no handler is set,
+                returns a default TerminalToolConfirmation.
+        """
+        if self.confirmation_handler is None:
+            self.confirmation_handler = TerminalToolConfirmation()
+        return self.confirmation_handler
 
     def update_tool_groups(self, group_names: list[str], active: bool) -> None:
         """Update the activation status of the given tool groups.
@@ -539,7 +561,8 @@ class Toolkit(StateModule):
 
         # Check if confirmation is needed
         if tool_func.need_confirmation:
-            confirmed = await request_tool_confirmation(
+            handler = self.get_confirmation_handler()
+            confirmed = await handler.request_confirmation(
                 tool_name=tool_call["name"],
                 tool_args=kwargs,
             )
@@ -550,7 +573,7 @@ class Toolkit(StateModule):
                             TextBlock(
                                 type="text",
                                 text=f"<system-info>"
-                                f"用户拒绝了工具 '{tool_call['name']}' 的执行"
+                                f"User rejected execution of tool '{tool_call['name']}'"
                                 f"</system-info>",
                             ),
                         ],

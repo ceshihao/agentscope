@@ -6,28 +6,29 @@ from agentscope.formatter import DashScopeChatFormatter
 from agentscope.model import DashScopeChatModel
 from agentscope.mcp import HttpStatelessClient
 from agentscope.plan import PlanNotebook
-from agentscope.tool import Toolkit, TerminalToolConfirmation, set_confirmation_handler
+from agentscope.tool import Toolkit, UserAgentToolConfirmation
 from agentscope.message import Msg
 
 
 async def main() -> None:
-  """通过 MCP 连接 localhost:8000/mcp 的 ReActAgent，支持阿里云运维工具。
+  """ReActAgent connected to localhost:8000/mcp via MCP, supporting Alibaba Cloud operations.
 
-  其中 `OOS_RebootInstances` 工具启用终端二次确认。
+  Tools with names containing Describe/Get/Query are read-only and don't require confirmation,
+  while other tools require user confirmation before execution.
   """
 
-  # 1) 工具与二次确认
+  # 1) Toolkit and confirmation setup
   toolkit = Toolkit()
-  set_confirmation_handler(TerminalToolConfirmation("请确认是否执行该工具"))
+  toolkit.set_confirmation_handler(UserAgentToolConfirmation("Confirm tool execution"))
 
-  # 2) 连接 MCP（streamable_http）到本地服务 http://localhost:8000/mcp
+  # 2) Connect MCP (streamable_http) to local service http://localhost:8000/mcp
   mcp_client = HttpStatelessClient(
     name="alibaba_cloud_ops_mcp",
     transport="streamable_http",
     url="http://localhost:8000/mcp",
   )
 
-  # 动态设置二次确认：名字包含 Describe/Get/Query 的为只读工具，不需要确认，其他需要确认
+  # Dynamic confirmation setup: tools with Describe/Get/Query in name are read-only (no confirmation), others require confirmation
   all_tools = await mcp_client.list_tools()
   readonly_keywords = ["describe", "get", "query"]
   need_confirmation_funcs = []
@@ -41,10 +42,10 @@ async def main() -> None:
     need_confirmation_funcs=need_confirmation_funcs,
   )
 
-  # 3) 构建 ReActAgent（保留 PlanNotebook）
+  # 3) Build ReActAgent (keeping PlanNotebook)
   agent = ReActAgent(
     name="Alibaba Cloud Ops Assistant",
-    sys_prompt="你是一个有用的助手，具备阿里云资源运维能力。",
+    sys_prompt="You are a helpful assistant with Alibaba Cloud operations capabilities.",
     model=DashScopeChatModel(
       model_name="qwen-max-latest",
       api_key=os.environ["DASHSCOPE_API_KEY"],
@@ -56,7 +57,7 @@ async def main() -> None:
     toolkit=toolkit,
   )
 
-  # 4) 用户交互循环：复杂任务将自动进入计划模式
+  # 4) User interaction loop: complex tasks will automatically enter plan mode
   user = UserAgent(name="user")
   msg = None
   while True:
@@ -64,12 +65,13 @@ async def main() -> None:
     if msg.get_text_content() == "exit":
       break
     if agent.plan_notebook.current_plan is None:
-      # 强制先创建计划：在每轮将用户消息交给智能体前，注入 system 提示
+      # Force plan creation first: inject system prompt before giving user message to agent
       plan_first = Msg(
         "system",
         (
-          "在执行任何工具或采取任何行动之前，必须先调用 'create_plan' 创建完整计划，"
-          "并在计划明确描述目标、步骤与预期结果后再继续执行后续操作。"
+          "Before executing any tools or taking any actions, you must first call 'create_plan' "
+          "to create a complete plan with clear goals, steps, and expected outcomes, "
+          "then proceed with subsequent operations."
         ),
         "system",
       )
