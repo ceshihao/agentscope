@@ -23,6 +23,14 @@ from ._multi_modality import (
     openai_audio_to_text,
 )
 from ._toolkit import Toolkit
+from ._confirmation import (
+    ToolConfirmationBase,
+    TerminalToolConfirmation,
+    StudioToolConfirmation,
+    set_confirmation_handler,
+    get_confirmation_handler,
+    request_tool_confirmation,
+)
 
 __all__ = [
     "Toolkit",
@@ -41,4 +49,10 @@ __all__ = [
     "openai_create_image_variation",
     "openai_image_to_text",
     "openai_audio_to_text",
+    "ToolConfirmationBase",
+    "TerminalToolConfirmation",
+    "StudioToolConfirmation",
+    "set_confirmation_handler",
+    "get_confirmation_handler",
+    "request_tool_confirmation",
 ]

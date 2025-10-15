@@ -48,6 +48,7 @@ from ..types import (
 )
 from ..tracing._trace import trace_toolkit
 from .._logging import logger
+from ._confirmation import request_tool_confirmation
 
 
 @dataclass
@@ -204,6 +205,7 @@ class Toolkit(StateModule):
             ToolResponse | None,
         ]
         | None = None,
+        need_confirmation: bool = False,
     ) -> None:
         """Register a tool function to the toolkit.
 
@@ -345,6 +347,7 @@ class Toolkit(StateModule):
             extended_model=None,
             mcp_name=mcp_name,
             postprocess_func=postprocess_func,
+            need_confirmation=need_confirmation,
         )
 
         self.tools[func_name] = func_obj
@@ -534,6 +537,27 @@ class Toolkit(StateModule):
             **(tool_call.get("input", {}) or {}),
         }
 
+        # Check if confirmation is needed
+        if tool_func.need_confirmation:
+            confirmed = await request_tool_confirmation(
+                tool_name=tool_call["name"],
+                tool_args=kwargs,
+            )
+            if not confirmed:
+                return _object_wrapper(
+                    ToolResponse(
+                        content=[
+                            TextBlock(
+                                type="text",
+                                text=f"<system-info>"
+                                f"用户拒绝了工具 '{tool_call['name']}' 的执行"
+                                f"</system-info>",
+                            ),
+                        ],
+                    ),
+                    None,
+                )
+
         # Prepare postprocess function
         if tool_func.postprocess_func:
             partial_postprocess_func = partial(
@@ -613,6 +637,7 @@ class Toolkit(StateModule):
             ToolResponse | None,
         ]
         | None = None,
+        need_confirmation_funcs: list[str] | None = None,
     ) -> None:
         """Register tool functions from an MCP client.
 
@@ -705,12 +730,19 @@ class Toolkit(StateModule):
             if preset_kwargs_mapping is not None:
                 preset_kwargs = preset_kwargs_mapping.get(mcp_tool.name, {})
 
+            # Check if this function needs confirmation
+            need_confirmation = (
+                need_confirmation_funcs is not None 
+                and mcp_tool.name in need_confirmation_funcs
+            )
+            
             # TODO: handle mcp_server_name
             self.register_tool_function(
                 tool_func=func_obj,
                 group_name=group_name,
                 preset_kwargs=preset_kwargs,
                 postprocess_func=postprocess_func,
+                need_confirmation=need_confirmation,
             )
 
         logger.info(

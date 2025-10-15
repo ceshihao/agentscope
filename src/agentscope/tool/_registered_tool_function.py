@@ -45,6 +45,8 @@ class RegisteredToolFunction:
     response as arguments. If it returns `None`, the tool result will be
     returned as is. If it returns a `ToolResponse`, the returned block
     will be used as the final tool response."""
+    need_confirmation: bool = False
+    """Whether the tool execution requires user confirmation before running."""
 
     @property
     def extended_json_schema(self) -> dict:
