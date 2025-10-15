@@ -48,7 +48,7 @@ from ..types import (
 )
 from ..tracing._trace import trace_toolkit
 from .._logging import logger
-from ._confirmation import request_tool_confirmation, ToolConfirmationBase, TerminalToolConfirmation
+from ._confirmation import request_tool_confirmation, ToolConfirmationBase, UserAgentToolConfirmation
 
 
 @dataclass
@@ -152,10 +152,10 @@ class Toolkit(StateModule):
         Returns:
             `ToolConfirmationBase`:
                 The current confirmation handler. If no handler is set,
-                returns a default TerminalToolConfirmation.
+                returns a default UserAgentToolConfirmation.
         """
         if self.confirmation_handler is None:
-            self.confirmation_handler = TerminalToolConfirmation()
+            self.confirmation_handler = UserAgentToolConfirmation()
         return self.confirmation_handler
 
     def update_tool_groups(self, group_names: list[str], active: bool) -> None:

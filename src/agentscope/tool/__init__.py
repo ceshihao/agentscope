@@ -25,8 +25,6 @@ from ._multi_modality import (
 from ._toolkit import Toolkit
 from ._confirmation import (
     ToolConfirmationBase,
-    TerminalToolConfirmation,
-    StudioToolConfirmation,
     UserAgentToolConfirmation,
     set_confirmation_handler,
     get_confirmation_handler,
@@ -51,8 +49,6 @@ __all__ = [
     "openai_image_to_text",
     "openai_audio_to_text",
     "ToolConfirmationBase",
-    "TerminalToolConfirmation",
-    "StudioToolConfirmation",
     "UserAgentToolConfirmation",
     "set_confirmation_handler",
     "get_confirmation_handler",

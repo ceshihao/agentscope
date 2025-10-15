@@ -32,96 +32,6 @@ class ToolConfirmationBase:
         pass
 
 
-class TerminalToolConfirmation(ToolConfirmationBase):
-    """Terminal-based tool confirmation."""
-
-    def __init__(self, confirmation_prompt: str = "Confirm tool execution") -> None:
-        """Initialize the terminal confirmation handler.
-
-        Args:
-            confirmation_prompt (`str`, defaults to `"Confirm tool execution"`):
-                The prompt text to display when requesting confirmation.
-        """
-        self.confirmation_prompt = confirmation_prompt
-
-    async def request_confirmation(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        **kwargs: Any,
-    ) -> bool:
-        """Request user confirmation via terminal input.
-
-        Args:
-            tool_name (`str`):
-                The name of the tool to be executed.
-            tool_args (`dict[str, Any]`):
-                The arguments that will be passed to the tool.
-            **kwargs:
-                Additional keyword arguments.
-
-        Returns:
-            `bool`:
-                `True` if the user confirms the execution, `False` otherwise.
-        """
-        print(f"\n{self.confirmation_prompt}: {tool_name}")
-        print(f"Arguments: {tool_args}")
-        
-        while True:
-            response = input("Execute? (y/n): ").strip().lower()
-            if response in ['y', 'yes']:
-                return True
-            elif response in ['n', 'no']:
-                return False
-            else:
-                print("Please enter y/yes or n/no")
-
-
-class StudioToolConfirmation(ToolConfirmationBase):
-    """Studio-based tool confirmation."""
-
-    def __init__(self, studio_url: str = "http://localhost:3000") -> None:
-        """Initialize the studio confirmation handler.
-
-        Args:
-            studio_url (`str`, defaults to `"http://localhost:3000"`):
-                The URL of the AgentScope Studio.
-        """
-        self.studio_url = studio_url
-
-    async def request_confirmation(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        **kwargs: Any,
-    ) -> bool:
-        """Request user confirmation via Studio interface.
-
-        Args:
-            tool_name (`str`):
-                The name of the tool to be executed.
-            tool_args (`dict[str, Any]`):
-                The arguments that will be passed to the tool.
-            **kwargs:
-                Additional keyword arguments.
-
-        Returns:
-            `bool`:
-                `True` if the user confirms the execution, `False` otherwise.
-        """
-        # This would integrate with the Studio interface
-        # For now, we'll use a simple implementation
-        print(f"\nStudio确认: {tool_name}")
-        print(f"参数: {tool_args}")
-        
-        while True:
-            response = input("是否执行? (y/n): ").strip().lower()
-            if response in ['y', 'yes', '是', '确认']:
-                return True
-            elif response in ['n', 'no', '否', '取消']:
-                return False
-            else:
-                print("请输入 y/yes/是/确认 或 n/no/否/取消")
 
 
 # Global confirmation handler instance
@@ -152,8 +62,8 @@ def get_confirmation_handler() -> ToolConfirmationBase:
     """
     global _confirmation_handler
     if _confirmation_handler is None:
-        # Default to terminal confirmation
-        _confirmation_handler = TerminalToolConfirmation()
+        # Default to UserAgent confirmation
+        _confirmation_handler = UserAgentToolConfirmation()
     return _confirmation_handler
 
 
