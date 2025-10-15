@@ -6,6 +6,7 @@ from agentscope.formatter import DashScopeChatFormatter
 from agentscope.model import DashScopeChatModel
 from agentscope.mcp import HttpStatelessClient
 from agentscope.plan import PlanNotebook
+from agentscope.pipeline import stream_printing_messages
 from agentscope.tool import Toolkit, UserAgentToolConfirmation
 from agentscope.message import Msg
 
@@ -57,6 +58,9 @@ async def main() -> None:
     toolkit=toolkit,
   )
 
+  # Set agent reference in toolkit for confirmation message generation
+  toolkit.set_agent(agent)
+
   # 4) User interaction loop: complex tasks will automatically enter plan mode
   user = UserAgent(name="user")
   msg = None
@@ -75,9 +79,19 @@ async def main() -> None:
         ),
         "system",
       )
-      msg = await agent([plan_first, msg])
-    else:
-      msg = await agent(msg)
+      msg = [plan_first, msg]
+      # msg = await agent([plan_first, msg])
+    # else:
+    #   msg = await agent(msg)
+    # We disable the terminal printing to avoid messy outputs
+    agent.set_console_output_enabled(False)
+
+    # obtain the printing messages from the agent in a streaming way
+    async for msg, last in stream_printing_messages(
+        agents=[agent],
+        coroutine_task=agent(msg),
+    ):
+        print(msg, last)
 
 
 asyncio.run(main())

@@ -101,6 +101,7 @@ class Toolkit(StateModule):
         self.tools: dict[str, RegisteredToolFunction] = {}
         self.groups: dict[str, ToolGroup] = {}
         self.confirmation_handler: ToolConfirmationBase | None = None
+        self._agent = None
 
     def create_tool_group(
         self,
@@ -157,6 +158,14 @@ class Toolkit(StateModule):
         if self.confirmation_handler is None:
             self.confirmation_handler = UserAgentToolConfirmation()
         return self.confirmation_handler
+
+    def set_agent(self, agent) -> None:
+        """Set the agent reference for this toolkit.
+
+        Args:
+            agent: The agent instance that can be used for generating responses.
+        """
+        self._agent = agent
 
     def update_tool_groups(self, group_names: list[str], active: bool) -> None:
         """Update the activation status of the given tool groups.
@@ -562,9 +571,12 @@ class Toolkit(StateModule):
         # Check if confirmation is needed
         if tool_func.need_confirmation:
             handler = self.get_confirmation_handler()
+            # Try to get agent from kwargs or context
+            agent = kwargs.get('agent') or getattr(self, '_agent', None)
             confirmed = await handler.request_confirmation(
                 tool_name=tool_call["name"],
                 tool_args=kwargs,
+                agent=agent,
             )
             if not confirmed:
                 return _object_wrapper(
