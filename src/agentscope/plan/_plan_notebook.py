@@ -265,7 +265,7 @@ class PlanNotebook(StateModule):
                 content=[
                     TextBlock(
                         type="text",
-                        text=f"Plan '{name}' created successfully.",
+                        text=f"Plan '{name}' created successfully.\n\n{plan.to_markdown()}",
                     ),
                 ],
             )
@@ -278,7 +278,7 @@ class PlanNotebook(StateModule):
                         text=(
                             "The current plan named "
                             f"'{self.current_plan.name}' is replaced by the "
-                            f"newly created plan named '{name}'."
+                            f"newly created plan named '{name}'.\n\n{plan.to_markdown()}"
                         ),
                     ),
                 ],
@@ -655,14 +655,16 @@ class PlanNotebook(StateModule):
         # Store the finished plan into history
         await self.storage.add_plan(self.current_plan)
 
+        # Generate summary before clearing the plan
+        plan_summary = self.current_plan.to_markdown(detailed=True)
+        
         self.current_plan = None
         await self._trigger_plan_change_hooks()
         return ToolResponse(
             content=[
                 TextBlock(
                     type="text",
-                    text=f"The current plan is finished successfully as "
-                    f"'{state}'.",
+                    text=f"## ✅ 计划执行完成\n\n**状态**: {state}\n**结果**: {outcome}\n\n**计划总结**:\n{plan_summary}",
                 ),
             ],
         )

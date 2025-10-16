@@ -9,6 +9,12 @@ from agentscope.plan import PlanNotebook
 from agentscope.pipeline import stream_printing_messages
 from agentscope.tool import Toolkit, UserAgentToolConfirmation
 from agentscope.message import Msg
+import agentscope
+
+agentscope.init(
+    # ...
+    studio_url="http://localhost:3000"
+)
 
 
 async def main() -> None:
@@ -46,7 +52,7 @@ async def main() -> None:
   # 3) Build ReActAgent (keeping PlanNotebook)
   agent = ReActAgent(
     name="Alibaba Cloud Ops Assistant",
-    sys_prompt="You are a helpful assistant with Alibaba Cloud operations capabilities.",
+    sys_prompt="You are a helpful assistant with Alibaba Cloud operations capabilities.如果用户输入的不明确或不足以制定计划，请反问用户提供更多相关信息。",
     model=DashScopeChatModel(
       model_name="qwen-max-latest",
       api_key=os.environ["DASHSCOPE_API_KEY"],
@@ -63,35 +69,36 @@ async def main() -> None:
 
   # 4) User interaction loop: complex tasks will automatically enter plan mode
   user = UserAgent(name="user")
-  msg = None
-  while True:
-    msg = await user(msg)
-    if msg.get_text_content() == "exit":
-      break
-    if agent.plan_notebook.current_plan is None:
-      # Force plan creation first: inject system prompt before giving user message to agent
-      plan_first = Msg(
+  msg_list = []
+  plan_first = Msg(
         "system",
         (
           "Before executing any tools or taking any actions, you must first call 'create_plan' "
           "to create a complete plan with clear goals, steps, and expected outcomes, "
-          "then proceed with subsequent operations."
+          "then proceed with subsequent operations. 如果用户输入的不明确或不足以制定计划，请反问用户提供更多相关信息。"
         ),
         "system",
       )
-      msg = [plan_first, msg]
-      # msg = await agent([plan_first, msg])
-    # else:
-    #   msg = await agent(msg)
+  msg_list.append(plan_first)
+  while True:      
+    msg = await user(msg_list)
+    msg_list.append(msg)
+    
+    if msg.get_text_content() == "exit":
+      break
+
+    # Always use full message history for processing
+    reply_msg = await agent(msg_list)
+    msg_list.append(reply_msg)
     # We disable the terminal printing to avoid messy outputs
-    agent.set_console_output_enabled(False)
+    # agent.set_console_output_enabled(False)
 
     # obtain the printing messages from the agent in a streaming way
-    async for msg, last in stream_printing_messages(
-        agents=[agent],
-        coroutine_task=agent(msg),
-    ):
-        print(msg, last)
+    # async for msg, last in stream_printing_messages(
+    #     agents=[agent],
+    #     coroutine_task=agent(msg),
+    # ):
+    #     print(msg, last)
 
 
 asyncio.run(main())

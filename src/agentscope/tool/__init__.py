@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """The tool module in agentscope."""
 
-from ._response import ToolResponse
+from ._response import ToolResponse, ToolConfirmationResponse
 from ._coding import (
     execute_python_code,
     execute_shell_command,
@@ -34,6 +34,7 @@ from ._confirmation import (
 __all__ = [
     "Toolkit",
     "ToolResponse",
+    "ToolConfirmationResponse",
     "execute_python_code",
     "execute_shell_command",
     "view_text_file",

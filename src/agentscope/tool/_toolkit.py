@@ -30,7 +30,7 @@ from ._async_wrapper import (
     _sync_generator_wrapper,
 )
 from ._registered_tool_function import RegisteredToolFunction
-from ._response import ToolResponse
+from ._response import ToolResponse, ToolConfirmationResponse
 from .._utils._common import _remove_title_field
 from ..mcp import (
     MCPToolFunction,
@@ -102,6 +102,7 @@ class Toolkit(StateModule):
         self.groups: dict[str, ToolGroup] = {}
         self.confirmation_handler: ToolConfirmationBase | None = None
         self._agent = None
+        self._pending_tool_confirmation: dict | None = None
 
     def create_tool_group(
         self,
@@ -166,6 +167,40 @@ class Toolkit(StateModule):
             agent: The agent instance that can be used for generating responses.
         """
         self._agent = agent
+
+    def has_pending_confirmation(self) -> bool:
+        """Check if there's a pending tool confirmation.
+
+        Returns:
+            bool: True if there's a pending confirmation, False otherwise.
+        """
+        return self._pending_tool_confirmation is not None
+
+    def get_pending_confirmation(self) -> dict | None:
+        """Get the pending tool confirmation details.
+
+        Returns:
+            dict | None: The pending confirmation details or None if no pending confirmation.
+        """
+        return self._pending_tool_confirmation
+
+    def clear_pending_confirmation(self) -> None:
+        """Clear the pending tool confirmation."""
+        self._pending_tool_confirmation = None
+
+    def set_pending_confirmation(self, tool_name: str, tool_args: dict, confirmation_message: str) -> None:
+        """Set a pending tool confirmation.
+
+        Args:
+            tool_name: The name of the tool requiring confirmation.
+            tool_args: The arguments for the tool.
+            confirmation_message: The confirmation message to show to the user.
+        """
+        self._pending_tool_confirmation = {
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "confirmation_message": confirmation_message,
+        }
 
     def update_tool_groups(self, group_names: list[str], active: bool) -> None:
         """Update the activation status of the given tool groups.
@@ -570,28 +605,88 @@ class Toolkit(StateModule):
 
         # Check if confirmation is needed
         if tool_func.need_confirmation:
-            handler = self.get_confirmation_handler()
-            # Try to get agent from kwargs or context
-            agent = kwargs.get('agent') or getattr(self, '_agent', None)
-            confirmed = await handler.request_confirmation(
-                tool_name=tool_call["name"],
-                tool_args=kwargs,
-                agent=agent,
-            )
-            if not confirmed:
-                return _object_wrapper(
-                    ToolResponse(
-                        content=[
-                            TextBlock(
-                                type="text",
-                                text=f"<system-info>"
-                                f"User rejected execution of tool '{tool_call['name']}'"
-                                f"</system-info>",
-                            ),
-                        ],
-                    ),
-                    None,
+            # Generate confirmation message using agent if available
+            if self._agent is not None and hasattr(self._agent, 'model'):
+                try:
+                    # Determine user language from recent conversation context
+                    user_language = "English"  # Default to English
+                    
+                    # Try to get language from agent's recent messages
+                    if hasattr(self._agent, '_msg_list') and self._agent._msg_list:
+                        # Check recent messages in agent's message list
+                        for msg in reversed(self._agent._msg_list[-10:]):  # Check last 10 messages
+                            if hasattr(msg, 'role') and msg.role == "user":
+                                content = msg.get_text_content() if hasattr(msg, 'get_text_content') else str(msg.content)
+                                # Simple Chinese detection
+                                if any('\u4e00' <= char <= '\u9fff' for char in content):
+                                    user_language = "Chinese"
+                                    break
+                    elif hasattr(self._agent, 'memory') and hasattr(self._agent.memory, 'get_memory'):
+                        try:
+                            recent_messages = await self._agent.memory.get_memory()
+                            if recent_messages:
+                                for msg in reversed(recent_messages[-5:]):  # Check last 5 messages
+                                    if hasattr(msg, 'role') and msg.role == "user":
+                                        content = msg.get_text_content() if hasattr(msg, 'get_text_content') else str(msg.content)
+                                        # Simple Chinese detection
+                                        if any('\u4e00' <= char <= '\u9fff' for char in content):
+                                            user_language = "Chinese"
+                                            break
+                        except Exception:
+                            pass  # Fall back to English
+                    
+                    if user_language == "Chinese":
+                        confirmation_prompt = (
+                            f"请为以下工具执行生成一个清晰的中文确认消息：\n"
+                            f"工具名称: {tool_call['name']}\n"
+                            f"参数: {kwargs}\n\n"
+                            f"消息应该：\n"
+                            f"1. 清楚地解释工具将要做什么\n"
+                            f"2. 以可读的格式显示参数\n"
+                            f"3. 请求用户确认并提供清晰的说明\n"
+                            f"4. 使用专业和友好的语调\n"
+                            f"5. 使用中文回复\n"
+                            f"6. 使用 Markdown 格式进行更好的展示"
+                        )
+                    else:
+                        confirmation_prompt = (
+                            f"Please generate a clear confirmation message for the following tool execution:\n"
+                            f"Tool Name: {tool_call['name']}\n"
+                            f"Parameters: {kwargs}\n\n"
+                            f"The message should:\n"
+                            f"1. Clearly explain what the tool will do\n"
+                            f"2. Show the parameters in a readable format\n"
+                            f"3. Ask for user confirmation with clear instructions\n"
+                            f"4. Use a professional and informative tone\n"
+                            f"5. Use Markdown format for better presentation"
+                        )
+                    
+                    from ..message import Msg
+                    prompt_msg = Msg("user", confirmation_prompt, "user")
+                    response_msg = await self._agent.model.generate([prompt_msg])
+                    confirmation_message = response_msg.content
+                except Exception:
+                    # Fallback to English
+                    confirmation_message = (
+                        f"I need to execute the tool '{tool_call['name']}' with parameters: {kwargs}. "
+                        f"Please confirm if I should proceed (yes/no)."
+                    )
+            else:
+                confirmation_message = (
+                    f"I need to execute the tool '{tool_call['name']}' with parameters: {kwargs}. "
+                    f"Please confirm if I should proceed (yes/no)."
                 )
+            
+            # Set pending confirmation and return special response
+            self.set_pending_confirmation(tool_call['name'], kwargs, confirmation_message)
+            return _object_wrapper(
+                ToolConfirmationResponse(
+                    tool_name=tool_call['name'],
+                    tool_args=kwargs,
+                    confirmation_message=confirmation_message,
+                ),
+                None,
+            )
 
         # Prepare postprocess function
         if tool_func.postprocess_func:
