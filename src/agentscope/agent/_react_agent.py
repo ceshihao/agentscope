@@ -225,9 +225,14 @@ class ReActAgent(ReActAgentBase):
         self.plan_notebook = None
         if plan_notebook:
             self.plan_notebook = plan_notebook
+            # When enable_meta_tool is True, the plan tool group activation is
+            # controlled by agent.
+            # Otherwise, the plan tool group is always active.
+            tool_group_active = not enable_meta_tool
             self.toolkit.create_tool_group(
                 "plan_related",
                 description=self.plan_notebook.description,
+                active=tool_group_active,
             )
             for tool in plan_notebook.list_tools():
                 self.toolkit.register_tool_function(
