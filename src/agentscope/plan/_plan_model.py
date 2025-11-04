@@ -35,7 +35,7 @@ class SubTask(BaseModel):
         description="The actual outcome of the subtask.",
         default=None,
     )
-    state: Literal["todo", "in_progress", "done", "abandoned"] = Field(
+    state: Literal["todo", "in_progress", "done", "abandoned", "wait_user_input"] = Field(
         description="The state of the subtask.",
         default="todo",
     )
@@ -62,6 +62,7 @@ class SubTask(BaseModel):
             "in_progress": "- [][WIP]",
             "done": "- [x]",
             "abandoned": "- [][Abandoned]",
+            "wait_user_input": "- [ ] [WaitUserInput]",
         }
         return f"{status_map[self.state]} {self.name}"
 
@@ -77,6 +78,7 @@ class SubTask(BaseModel):
             "in_progress": "- [ ] [WIP]",
             "done": "- [x] ",
             "abandoned": "- [ ] [Abandoned]",
+            "wait_user_input": "- [ ] [WaitUserInput]",
         }
 
         if detailed:

@@ -84,6 +84,24 @@ class DefaultPlanToHint:
         "the plan afterward."
     )
 
+    when_a_subtask_wait_user_input: str = (
+        "The current plan:\n"
+        "```\n"
+        "{plan}\n"
+        "```\n"
+        "Now the subtask at index {subtask_idx}, named '{subtask_name}', is "
+        "'wait_user_input'. Its details are as follows:\n"
+        "```\n"
+        "{subtask}\n"
+        "```\n"
+        "Your options include:\n"
+        "- Stop executing the subtask and ask the user for more information."
+        "\n"
+        "- If the user asks you to do something unrelated to the plan, "
+        "prioritize the completion of user's query first, and then return to "
+        "the plan afterward."
+    )
+
     at_the_end: str = (
         "The current plan:\n"
         "```\n"
@@ -116,8 +134,9 @@ class DefaultPlanToHint:
 
         else:
             # Count the number of subtasks in each state
-            n_todo, n_in_progress, n_done, n_abandoned = 0, 0, 0, 0
+            n_todo, n_in_progress, n_done, n_abandoned, n_wait_user_input = 0, 0, 0, 0, 0
             in_progress_subtask_idx = None
+            wait_user_input_idx = None
             for idx, subtask in enumerate(plan.subtasks):
                 if subtask.state == "todo":
                     n_todo += 1
@@ -131,6 +150,9 @@ class DefaultPlanToHint:
 
                 elif subtask.state == "abandoned":
                     n_abandoned += 1
+                elif subtask.state == "wait_user_input":
+                    n_wait_user_input += 1
+                    wait_user_input_idx = idx
 
             hint = None
             if n_in_progress == 0 and n_done == 0:
@@ -150,6 +172,16 @@ class DefaultPlanToHint:
                     ),
                 )
 
+            elif n_wait_user_input > 0 and wait_user_input_idx is not None:
+                # One subtask is wait_user_input
+                hint = self.when_a_subtask_wait_user_input.format(
+                    plan=plan.to_markdown(),
+                    subtask_idx=wait_user_input_idx,
+                    subtask_name=plan.subtasks[wait_user_input_idx].name,
+                    subtask=plan.subtasks[wait_user_input_idx].to_markdown(
+                        detailed=True,
+                    ),
+                )
             elif n_in_progress == 0 and n_done > 0:
                 # No subtask is in_progress, and some subtasks are done
                 hint = self.when_no_subtask_in_progress.format(
@@ -424,7 +456,7 @@ class PlanNotebook(StateModule):
     async def update_subtask_state(
         self,
         subtask_idx: int,
-        state: Literal["todo", "in_progress", "abandoned"],
+        state: Literal["todo", "in_progress", "abandoned", "wait_user_input"],
     ) -> ToolResponse:
         """Update the state of a subtask by given index and state. Note if you
         want to mark a subtask as done, you SHOULD call `finish_subtask`
@@ -433,7 +465,7 @@ class PlanNotebook(StateModule):
         Args:
             subtask_idx (`int`):
                 The index of the subtask to be updated, starting from 0.
-            state (`Literal["todo", "in_progress", "abandoned"]`):
+            state (`Literal["todo", "in_progress", "abandoned", "wait_user_input"]`):
                 The new state of the subtask. If you want to mark a subtask
                 as done, you SHOULD call `finish_subtask` instead with the
                 specific outcome.
@@ -469,13 +501,13 @@ class PlanNotebook(StateModule):
                 ],
             )
 
-        if state not in ["todo", "in_progress", "abandoned"]:
+        if state not in ["todo", "in_progress", "abandoned", "wait_user_input"]:
             return ToolResponse(
                 content=[
                     TextBlock(
                         type="text",
                         text=f"Invalid state '{state}'. Must be one of "
-                        "'todo', 'in_progress', 'abandoned'.",
+                        "'todo', 'in_progress', 'abandoned', 'wait_user_input'.",
                     ),
                 ],
             )
