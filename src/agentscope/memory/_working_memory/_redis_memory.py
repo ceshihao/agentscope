@@ -42,6 +42,11 @@ class RedisMemory(MemoryBase):
     to a specific mark.
     """
 
+    MARKS_SET_KEY = "user_id:{user_id}:session:{session_id}:marks_set"
+    """Redis key pattern (without prefix) for storing all mark names in a set
+    for efficient mark key discovery without SCAN.
+    """
+
     MESSAGE_KEY = "user_id:{user_id}:session:{session_id}:msg:{msg_id}"
     """Redis key pattern (without prefix) for storing message payload data."""
 
@@ -179,6 +184,18 @@ class RedisMemory(MemoryBase):
             mark="*",
         )
 
+    def _get_marks_set_key(self) -> str:
+        """Get the Redis key for the marks set.
+
+        Returns:
+            `str`:
+                The Redis key for storing all mark names in a set.
+        """
+        return self.key_prefix + self.MARKS_SET_KEY.format(
+            user_id=self.user_id,
+            session_id=self.session_id,
+        )
+
     def _get_message_key(self, msg_id: str) -> str:
         """Get the Redis key for a specific message.
 
@@ -202,6 +219,12 @@ class RedisMemory(MemoryBase):
     ) -> None:
         """Refresh the TTL for the session keys (if `key_ttl` is set).
 
+        This method refreshes TTL for:
+        - The main session key
+        - All mark keys (tracked in marks_set)
+        - The marks_set key itself
+        - All message keys are handled individually and don't need refresh here
+
         Args:
             pipe (`Any | None`, optional):
                 An optional Redis pipeline to use. If `None`, a new pipeline
@@ -217,17 +240,19 @@ class RedisMemory(MemoryBase):
         if pipe is None:
             pipe = self._client.pipeline()
 
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_session_pattern(),
-                count=100,
-            )
-            for key in keys:
-                await pipe.expire(key, self.key_ttl)
-            if cursor == 0:
-                break
+        # Refresh session key
+        await pipe.expire(self._get_session_key(), self.key_ttl)
+
+        # Get all mark names from the marks set
+        marks_set_key = self._get_marks_set_key()
+        mark_names = await self._client.smembers(marks_set_key)
+
+        # Refresh all mark keys
+        for mark_name in mark_names:
+            await pipe.expire(self._get_mark_key(mark_name), self.key_ttl)
+
+        # Refresh marks_set key itself
+        await pipe.expire(marks_set_key, self.key_ttl)
 
         if should_execute:
             await pipe.execute()
@@ -397,6 +422,8 @@ class RedisMemory(MemoryBase):
             # Record the marks if provided
             for mark in mark_list:
                 await pipe.rpush(self._get_mark_key(mark), m.id)
+                # Add mark name to marks_set for tracking
+                await pipe.sadd(self._get_marks_set_key(), mark)
 
         # Refresh TTLs
         await self._refresh_session_ttl(pipe=pipe)
@@ -421,18 +448,9 @@ class RedisMemory(MemoryBase):
         if not msg_ids:
             return 0
 
-        # Get all mark keys once before the pipeline
-        mark_keys = []
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_mark_pattern(),
-                count=50,
-            )
-            mark_keys.extend(keys)
-            if cursor == 0:
-                break
+        # Get all mark names from marks_set instead of SCAN
+        mark_names = await self._client.smembers(self._get_marks_set_key())
+        mark_keys = [self._get_mark_key(mark) for mark in mark_names]
 
         pipe = self._client.pipeline()
         for msg_id in msg_ids:
@@ -501,6 +519,9 @@ class RedisMemory(MemoryBase):
             # Delete the mark list
             await self._client.delete(mark_key)
 
+            # Remove mark name from marks_set
+            await self._client.srem(self._get_marks_set_key(), m)
+
         # Refresh TTLs
         await self._refresh_session_ttl()
 
@@ -510,18 +531,9 @@ class RedisMemory(MemoryBase):
         """Clear all messages belong to this session from the storage."""
         msg_ids = await self._client.lrange(self._get_session_key(), 0, -1)
 
-        # Get all mark keys using SCAN
-        mark_keys = []
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_mark_pattern(),
-                count=50,
-            )
-            mark_keys.extend(keys)
-            if cursor == 0:
-                break
+        # Get all mark names from marks_set instead of SCAN
+        mark_names = await self._client.smembers(self._get_marks_set_key())
+        mark_keys = [self._get_mark_key(mark) for mark in mark_names]
 
         pipe = self._client.pipeline()
 
@@ -535,6 +547,9 @@ class RedisMemory(MemoryBase):
         # Delete all mark lists
         for mark_key in mark_keys:
             await pipe.delete(mark_key)
+
+        # Delete the marks_set
+        await pipe.delete(self._get_marks_set_key())
 
         await pipe.execute()
 
@@ -639,8 +654,19 @@ class RedisMemory(MemoryBase):
                 if msg_id not in existing_ids_set and new_mark_key is not None:
                     await pipe.rpush(new_mark_key, msg_id)
                     existing_ids_set.add(msg_id)
+                    # Add new mark to marks_set
+                    await pipe.sadd(self._get_marks_set_key(), new_mark)
 
                 updated_count += 1
+
+        # Clean up empty mark lists and remove from marks_set
+        if old_mark is not None:
+            old_mark_key = self._get_mark_key(old_mark)
+            # Check if the old mark list is empty after removal
+            mark_list_len = await self._client.llen(old_mark_key)
+            if mark_list_len == 0:
+                await pipe.delete(old_mark_key)
+                await pipe.srem(self._get_marks_set_key(), old_mark)
 
         await self._refresh_session_ttl(pipe=pipe)
 
