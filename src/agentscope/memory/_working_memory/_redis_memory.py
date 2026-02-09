@@ -33,9 +33,10 @@ class RedisMemory(MemoryBase):
     a specific session.
     """
 
-    SESSION_PATTERN = "user_id:{user_id}:session:{session_id}:*"
-    """Redis key pattern (without prefix) for scanning all keys belong to
-    a specific user and session."""
+    MARKS_INDEX_KEY = "user_id:{user_id}:session:{session_id}:marks_index"
+    """Redis key pattern (without prefix) for storing all mark names as a SET.
+    This allows O(1) lookup of all marks without using SCAN.
+    """
 
     MARK_KEY = "user_id:{user_id}:session:{session_id}:mark:{mark}"
     """Redis key pattern (without prefix) for storing message IDs that belong
@@ -137,14 +138,15 @@ class RedisMemory(MemoryBase):
             session_id=self.session_id,
         )
 
-    def _get_session_pattern(self) -> str:
-        """Get the Redis key pattern for all keys in the current session.
+    def _get_marks_index_key(self) -> str:
+        """Get the Redis key for storing all mark names for the current
+        session.
 
         Returns:
             `str`:
-                The Redis key pattern for all keys in the current session.
+                The Redis key for the marks index SET.
         """
-        return self.key_prefix + self.SESSION_PATTERN.format(
+        return self.key_prefix + self.MARKS_INDEX_KEY.format(
             user_id=self.user_id,
             session_id=self.session_id,
         )
@@ -166,18 +168,45 @@ class RedisMemory(MemoryBase):
             mark=mark,
         )
 
-    def _get_mark_pattern(self) -> str:
-        """Get the Redis key pattern for all marks in the current session.
+    async def _get_all_mark_keys(self) -> list[str]:
+        """Get all mark keys for the current session by looking up the
+        marks index SET.
+
+        This method avoids using SCAN which has O(n) complexity on the entire
+        Redis keyspace. Instead, it uses SMEMBERS on the marks_index SET which
+        is O(n) only on the number of marks in this session.
 
         Returns:
-            `str`:
-                The Redis key pattern for all mark keys.
+            `list[str]`:
+                List of all mark keys for the current session.
         """
-        return self.key_prefix + self.MARK_KEY.format(
-            user_id=self.user_id,
-            session_id=self.session_id,
-            mark="*",
-        )
+        mark_names = await self._client.smembers(self._get_marks_index_key())
+        return [self._get_mark_key(mark) for mark in mark_names]
+
+    async def _get_all_session_keys(self) -> list[str]:
+        """Get all Redis keys belonging to the current session.
+
+        This method collects all known keys for the session without using SCAN:
+        - The session messages list key
+        - The marks index key
+        - All mark keys (from marks index)
+        - All message keys (from session messages list)
+
+        Returns:
+            `list[str]`:
+                List of all keys for the current session.
+        """
+        keys = [self._get_session_key(), self._get_marks_index_key()]
+
+        # Add all mark keys
+        mark_keys = await self._get_all_mark_keys()
+        keys.extend(mark_keys)
+
+        # Add all message keys
+        msg_ids = await self._client.lrange(self._get_session_key(), 0, -1)
+        keys.extend([self._get_message_key(msg_id) for msg_id in msg_ids])
+
+        return keys
 
     def _get_message_key(self, msg_id: str) -> str:
         """Get the Redis key for a specific message.
@@ -199,6 +228,7 @@ class RedisMemory(MemoryBase):
     async def _refresh_session_ttl(
         self,
         pipe: Any | None = None,
+        keys: list[str] | None = None,
     ) -> None:
         """Refresh the TTL for the session keys (if `key_ttl` is set).
 
@@ -208,6 +238,10 @@ class RedisMemory(MemoryBase):
                 will be created and executed immediately. If provided, the
                 expired commands will be added to the pipeline without
                 executing it.
+            keys (`list[str] | None`, optional):
+                An optional list of keys to refresh TTL for. If `None`, all
+                session keys will be refreshed. Providing specific keys can
+                improve performance by avoiding the need to look up all keys.
         """
         if self.key_ttl is None:
             return
@@ -217,17 +251,12 @@ class RedisMemory(MemoryBase):
         if pipe is None:
             pipe = self._client.pipeline()
 
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_session_pattern(),
-                count=100,
-            )
-            for key in keys:
-                await pipe.expire(key, self.key_ttl)
-            if cursor == 0:
-                break
+        # Get all session keys if not provided
+        if keys is None:
+            keys = await self._get_all_session_keys()
+
+        for key in keys:
+            await pipe.expire(key, self.key_ttl)
 
         if should_execute:
             await pipe.execute()
@@ -306,8 +335,14 @@ class RedisMemory(MemoryBase):
                     msg_dict = json.loads(msg_data)
                     messages.append(Msg.from_dict(msg_dict))
 
-        # Refresh TTLs
-        await self._refresh_session_ttl()
+        # Refresh TTLs only for keys we accessed
+        keys_to_refresh = [self._get_session_key()]
+        if mark:
+            keys_to_refresh.append(self._get_mark_key(mark))
+        if exclude_mark:
+            keys_to_refresh.append(self._get_mark_key(exclude_mark))
+        keys_to_refresh.extend(msg_keys if msg_ids else [])
+        await self._refresh_session_ttl(keys=keys_to_refresh)
 
         if prepend_summary and self._compressed_summary:
             return [
@@ -398,8 +433,19 @@ class RedisMemory(MemoryBase):
             for mark in mark_list:
                 await pipe.rpush(self._get_mark_key(mark), m.id)
 
-        # Refresh TTLs
-        await self._refresh_session_ttl(pipe=pipe)
+        # Add mark names to the marks index SET for O(1) lookup later
+        if mark_list:
+            await pipe.sadd(self._get_marks_index_key(), *mark_list)
+
+        # Collect keys that we know we're modifying for TTL refresh
+        keys_to_refresh = [self._get_session_key(), self._get_marks_index_key()]
+        keys_to_refresh.extend(
+            self._get_message_key(m.id) for m in messages_to_add
+        )
+        keys_to_refresh.extend(self._get_mark_key(mark) for mark in mark_list)
+
+        # Refresh TTLs only for keys we're touching
+        await self._refresh_session_ttl(pipe=pipe, keys=keys_to_refresh)
 
         await pipe.execute()
 
@@ -421,18 +467,9 @@ class RedisMemory(MemoryBase):
         if not msg_ids:
             return 0
 
-        # Get all mark keys once before the pipeline
-        mark_keys = []
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_mark_pattern(),
-                count=50,
-            )
-            mark_keys.extend(keys)
-            if cursor == 0:
-                break
+        # Get all mark keys from the marks index (O(n) on marks, not on all
+        # Redis keys)
+        mark_keys = await self._get_all_mark_keys()
 
         pipe = self._client.pipeline()
         for msg_id in msg_ids:
@@ -446,8 +483,15 @@ class RedisMemory(MemoryBase):
             for mark_key in mark_keys:
                 await pipe.lrem(mark_key, 0, msg_id)
 
+        # Collect keys we're modifying for TTL refresh
+        keys_to_refresh = [self._get_session_key(), self._get_marks_index_key()]
+        keys_to_refresh.extend(
+            self._get_message_key(msg_id) for msg_id in msg_ids
+        )
+        keys_to_refresh.extend(mark_keys)
+
         # Refresh TTLs
-        await self._refresh_session_ttl(pipe=pipe)
+        await self._refresh_session_ttl(pipe=pipe, keys=keys_to_refresh)
 
         results = await pipe.execute()
 
@@ -484,6 +528,7 @@ class RedisMemory(MemoryBase):
             mark = [mark]
 
         total_removed = 0
+        marks_to_remove_from_index = []
 
         for m in mark:
             mark_key = self._get_mark_key(m)
@@ -500,9 +545,14 @@ class RedisMemory(MemoryBase):
 
             # Delete the mark list
             await self._client.delete(mark_key)
+            marks_to_remove_from_index.append(m)
 
-        # Refresh TTLs
-        await self._refresh_session_ttl()
+        # Remove mark names from the marks index SET
+        if marks_to_remove_from_index:
+            await self._client.srem(
+                self._get_marks_index_key(),
+                *marks_to_remove_from_index,
+            )
 
         return total_removed
 
@@ -510,18 +560,9 @@ class RedisMemory(MemoryBase):
         """Clear all messages belong to this session from the storage."""
         msg_ids = await self._client.lrange(self._get_session_key(), 0, -1)
 
-        # Get all mark keys using SCAN
-        mark_keys = []
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=self._get_mark_pattern(),
-                count=50,
-            )
-            mark_keys.extend(keys)
-            if cursor == 0:
-                break
+        # Get all mark keys from the marks index (O(n) on marks, not on all
+        # Redis keys)
+        mark_keys = await self._get_all_mark_keys()
 
         pipe = self._client.pipeline()
 
@@ -536,6 +577,9 @@ class RedisMemory(MemoryBase):
         for mark_key in mark_keys:
             await pipe.delete(mark_key)
 
+        # Delete the marks index SET
+        await pipe.delete(self._get_marks_index_key())
+
         await pipe.execute()
 
     async def size(self) -> int:
@@ -546,7 +590,7 @@ class RedisMemory(MemoryBase):
                 The number of messages in the storage.
         """
         size = await self._client.llen(self._get_session_key())
-        await self._refresh_session_ttl()
+        await self._refresh_session_ttl(keys=[self._get_session_key()])
         return size
 
     async def update_messages_mark(
@@ -642,9 +686,27 @@ class RedisMemory(MemoryBase):
 
                 updated_count += 1
 
-        await self._refresh_session_ttl(pipe=pipe)
+        # Add new mark to the marks index SET if applicable
+        if new_mark is not None:
+            await pipe.sadd(self._get_marks_index_key(), new_mark)
+
+        # Collect keys we're modifying for TTL refresh
+        keys_to_refresh = [self._get_session_key(), self._get_marks_index_key()]
+        if old_mark is not None:
+            keys_to_refresh.append(self._get_mark_key(old_mark))
+        if new_mark is not None:
+            keys_to_refresh.append(self._get_mark_key(new_mark))
+
+        await self._refresh_session_ttl(pipe=pipe, keys=keys_to_refresh)
 
         await pipe.execute()
+
+        # Check if old_mark list is now empty and remove from index if so
+        if old_mark is not None:
+            old_mark_len = await self._client.llen(self._get_mark_key(old_mark))
+            if old_mark_len == 0:
+                await self._client.srem(self._get_marks_index_key(), old_mark)
+
         return updated_count
 
     async def close(self, close_connection_pool: bool | None = None) -> None:
